@@ -1,0 +1,41 @@
+# Local, production-like stack with the development payment/SMS/call
+# providers (mock gateway, OTPs printed in the api logs). For a real
+# deployment see README.md → "Going live".
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: sevasetu
+      POSTGRES_PASSWORD: sevasetu
+      POSTGRES_DB: sevasetu
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sevasetu"]
+      interval: 5s
+      retries: 10
+
+  api:
+    build: ./backend
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgres://sevasetu:sevasetu@postgres:5432/sevasetu
+      CORS_ORIGINS: http://localhost:8080,http://localhost:8081
+      TRUST_PROXY_HOPS: "1"
+    env_file:
+      - path: .env
+        required: false
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  web:
+    build: ./web
+    ports: ["8080:80"]
+    depends_on: [api]
+
+  admin:
+    build: ./admin
+    ports: ["8081:80"]
+    depends_on: [api]
+
+volumes:
+  pgdata:
