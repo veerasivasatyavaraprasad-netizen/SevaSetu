@@ -39,26 +39,37 @@ export async function runJob(name) {
   }
 }
 
-function istNow() {
-  return new Date(Date.now() + 5.5 * 3600_000);
+// Nightly jobs are due once per IST day, at or after RECONCILIATION_HOUR_IST.
+// "Already done today" is read from job_runs, not memory, so a restart or a
+// host that slept through the hour (free tiers) catches up on the next tick
+// instead of silently skipping a night.
+export async function nightlyDue(now = new Date()) {
+  const ist = new Date(now.getTime() + 5.5 * 3600_000);
+  if (ist.getUTCHours() < config.jobs.reconciliationHourIst) return false;
+  const { rows } = await query(
+    `SELECT 1 FROM job_runs
+      WHERE job = 'reconciliation' AND status = 'succeeded'
+        AND (started_at AT TIME ZONE 'Asia/Kolkata')::date = ($1::timestamptz AT TIME ZONE 'Asia/Kolkata')::date
+      LIMIT 1`,
+    [now],
+  );
+  return !rows[0];
+}
+
+export async function schedulerTick() {
+  for (const j of ['expire_payments', 'auto_confirm', 'subscriptions']) await runJob(j);
+  if (await nightlyDue()) {
+    await runJob('reconciliation');
+    await runJob('anomalies');
+  }
 }
 
 // Frequent jobs every 10 minutes; the reconciliation engine and anomaly
-// rules nightly at RECONCILIATION_HOUR_IST (Section 9.4: "every night").
+// rules nightly (Section 9.4: "every night").
 export function startScheduler() {
-  let lastNightly = null;
-  const tick = async () => {
-    for (const j of ['expire_payments', 'auto_confirm', 'subscriptions']) await runJob(j);
-    const now = istNow();
-    const day = now.toISOString().slice(0, 10);
-    if (now.getUTCHours() === config.jobs.reconciliationHourIst && lastNightly !== day) {
-      lastNightly = day;
-      await runJob('reconciliation');
-      await runJob('anomalies');
-    }
-  };
-  const timer = setInterval(() => { tick().catch((e) => console.error('scheduler tick failed', e)); }, 10 * 60_000);
+  const tick = () => { schedulerTick().catch((e) => console.error('scheduler tick failed', e)); };
+  const timer = setInterval(tick, 10 * 60_000);
   timer.unref();
-  setTimeout(() => { tick().catch((e) => console.error('scheduler tick failed', e)); }, 5_000).unref();
+  setTimeout(tick, 5_000).unref();
   return timer;
 }

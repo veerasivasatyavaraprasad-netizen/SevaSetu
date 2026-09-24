@@ -134,30 +134,43 @@ To use an external scheduler instead, set `RUN_SCHEDULER=false` and run `npm run
 
 ---
 
-## Deploying live on Render (one blueprint)
+## Deploying live for free (Render + Neon, Singapore)
 
-`render.yaml` creates everything: PostgreSQL, **sevasetu-app** (the customer/worker app plus API) and **sevasetu-admin** (the admin panel plus API, on its own subdomain). Each service serves its frontend and the API from one origin, so there is no CORS or cookie setup.
+Hosting and database cost nothing. Pay-as-you-go costs remain for real usage:
+- MSG91 charges per SMS (the login codes);
+- Exotel charges per call minute;
+- Razorpay takes about 2% of each payment and has no monthly fee.
 
-Before you start, have these accounts ready:
-- **Razorpay:** live keys (needs business KYC), plus RazorpayX for payouts.
-- **MSG91:** a DLT-registered OTP template.
-- **Exotel:** an ExoPhone for masked calling.
+`render.yaml` creates **sevasetu-app** (the customer and worker app plus API) and **sevasetu-admin** (the admin panel plus API, on its own subdomain) on Render's free plan in Singapore. Each service serves its frontend and the API from one origin, so there is no CORS or cookie setup.
 
-Steps:
-1. Render dashboard → **New + → Blueprint**. Connect this GitHub repository and pick the branch.
-2. Keep the default **Blueprint Path** (`render.yaml`).
-3. Fill in the prompted values:
+1. **Database (Neon, free):**
+   - Sign up at neon.tech and create a project in **AWS Asia Pacific (Singapore)**.
+   - In *Connection details*, turn **off** "Connection pooling" and copy the connection string. It starts with `postgresql://` and ends with `sslmode=require`.
+   - Use the direct connection, not the `-pooler` one: the app uses database locks that a pooler breaks.
+2. **Render:** in the dashboard, **New + → Blueprint**, connect this GitHub repository, branch `main`, and keep the default Blueprint Path.
+3. **Fill in the prompted values:**
+   - `DATABASE_URL` (the Neon string);
    - the Razorpay, MSG91 and Exotel credentials;
    - two first-run admin emails and passwords (ops and finance, each 12+ characters with mixed character types).
 
-   `JWT_SECRET`, `PII_ENCRYPTION_KEY` and `LOOKUP_HMAC_KEY` are generated for you. Copy `PII_ENCRYPTION_KEY` somewhere safe.
-4. Click **Apply**. When the deploy finishes:
-   - The app is live at `https://sevasetu-app.onrender.com` and the admin panel at `https://sevasetu-admin.onrender.com`. Render appends a suffix if a name is taken; the dashboard shows the real URLs.
-   - Both admins sign in and enrol 2FA. Ops launches the first city with its PIN codes under **Cities & franchises**, and adds services and prices under **Services & pricing**.
-5. Razorpay dashboard → Webhooks: add `https://<app URL>/api/webhooks/razorpay` for `payment.captured`, `order.paid` and `payout.*` events, using the same `RAZORPAY_WEBHOOK_SECRET`.
-6. Optional: attach your own domains, e.g. `app.example.com` and an unlinked `ops.example.com`, in each service's settings.
+   `JWT_SECRET`, `PII_ENCRYPTION_KEY` and `LOOKUP_HMAC_KEY` are generated for you. Copy `PII_ENCRYPTION_KEY` somewhere safe: losing it makes stored customer data unreadable.
+4. Click **Apply**. The app will be at `https://sevasetu-app.onrender.com` and the admin panel at `https://sevasetu-admin.onrender.com`; the dashboard shows the exact URLs.
+5. **Keep the app awake (free):**
+   - At uptimerobot.com, add an HTTP(s) monitor for `https://<app URL>/api/health` every 5 minutes.
+   - Free Render services sleep after 15 idle minutes; this keeps the customer app responsive and lets background jobs run.
+   - Don't add the admin service. Render's free plan allows about 750 running hours a month across services, which covers one always-on service. The admin panel can sleep and takes about 50 seconds to open after a quiet period.
+   - If the app does sleep through 02:00 IST, the nightly reconciliation runs as soon as it wakes. The day is not skipped.
+6. **Razorpay:** in Dashboard → Webhooks, add `https://<app URL>/api/webhooks/razorpay` for `payment.captured`, `order.paid` and `payout.*` events, with the same webhook secret you entered in Render.
+7. **Admin setup:**
+   - Both admins sign in and enrol 2FA.
+   - Ops launches the first city and its PIN codes under **Cities & franchises**, and adds services and prices under **Services & pricing**.
 
-The API refuses to start if any production credential is missing or still set to a development provider, so a half-configured deploy fails loudly instead of running insecurely. The blueprint uses paid plans (web `starter`, database `basic-256mb`). Render's free tier sleeps idle services, which stops the nightly reconciliation, and it deletes free databases after 30 days, so it isn't suitable for real customers.
+The API refuses to start if a production credential is missing or still set to a development provider. A half-configured deploy fails loudly instead of running insecurely.
+
+**When you outgrow the free tier:**
+- Change `plan: free` to `plan: starter` for both services in `render.yaml`, so they no longer sleep.
+- Move Neon to a paid plan for more storage and backups.
+- For Indian data residency, DigitalOcean App Platform (Bangalore) or AWS or Google Cloud (Mumbai) are the next steps.
 
 ## Going live
 

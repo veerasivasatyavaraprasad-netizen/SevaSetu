@@ -58,3 +58,19 @@ describe('DPDP rights (Section 10)', () => {
     expect(rows[0]).toEqual({ name: null, phone_enc: null, status: 'deleted' });
   });
 });
+
+describe('scheduler', () => {
+  it('runs the nightly checks once per IST day, catching up after a missed hour', async () => {
+    const { nightlyDue, schedulerTick } = await import('../src/services/jobs.js');
+    const { query: q } = await import('../src/db.js');
+    await q(`DELETE FROM job_runs WHERE job = 'reconciliation'`);
+    // 23:30 IST — after the 02:00 slot with no run today: due.
+    const lateNight = new Date('2026-09-24T18:00:00Z');
+    expect(await nightlyDue(lateNight)).toBe(true);
+    // 01:00 IST — before the slot: not due yet.
+    expect(await nightlyDue(new Date('2026-09-24T19:30:00Z'))).toBe(false);
+    // After a tick, tonight's run is either done or not yet due.
+    await schedulerTick();
+    expect(await nightlyDue()).toBe(false);
+  });
+});
