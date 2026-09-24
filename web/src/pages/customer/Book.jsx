@@ -23,6 +23,7 @@ export default function Book() {
   const [hour, setHour] = useState(10);
   const [quote, setQuote] = useState(null);
   const [agree, setAgree] = useState(false);
+  const [warranty, setWarranty] = useState(false);
   const { busy, error, run, setError } = useAction();
 
   const scheduledTime = useMemo(() => `${date}T${String(hour).padStart(2, '0')}:00:00+05:30`, [date, hour]);
@@ -35,9 +36,9 @@ export default function Book() {
   useEffect(() => {
     setQuote(null);
     setError(null);
-    api('/bookings/quote', { method: 'POST', body: { serviceId: id, scheduledTime } })
+    api('/bookings/quote', { method: 'POST', body: { serviceId: id, scheduledTime, withWarranty: warranty } })
       .then(setQuote).catch(setError);
-  }, [id, scheduledTime, setError]);
+  }, [id, scheduledTime, warranty, setError]);
 
   if (!svc || !addrData) return <Loading />;
   if (adding || addresses.length === 0) {
@@ -45,7 +46,7 @@ export default function Book() {
   }
 
   const book = () => run(async () => {
-    const r = await api('/bookings', { method: 'POST', body: { serviceId: id, addressId, scheduledTime, acceptCancellationPolicy: true } });
+    const r = await api('/bookings', { method: 'POST', body: { serviceId: id, addressId, scheduledTime, acceptCancellationPolicy: true, withWarranty: warranty } });
     try {
       await payOrder(r.order, { description: svc.service.name });
     } catch (e) {
@@ -84,6 +85,13 @@ export default function Book() {
           <>
             <div className="row between small"><span>Service</span><span>{rupees(quote.quote.basePrice)}</span></div>
             {quote.quote.isUrgent && <div className="row between small"><span>Urgent (same-day) premium</span><span>{rupees(quote.quote.urgentPremium)}</span></div>}
+            {quote.quote.warrantyAvailable && (
+              <label className="check">
+                <input type="checkbox" checked={warranty} onChange={(e) => setWarranty(e.target.checked)} />
+                <span>Add a {quote.quote.warrantyDays}-day service guarantee for {rupees(quote.quote.warrantyOptionFee)}: if the problem comes back, we send the professional again for free.</span>
+              </label>
+            )}
+            {quote.quote.warrantyFee > 0 && <div className="row between small"><span>{quote.quote.warrantyDays}-day guarantee</span><span>{rupees(quote.quote.warrantyFee)}</span></div>}
             <div className="row between mt"><strong>Total</strong><span className="big">{rupees(quote.quote.total)}</span></div>
             <div className="banner warn small mt"><strong>Cancellation policy.</strong> {quote.cancellationPolicy.text}</div>
             <label className="check">

@@ -35,6 +35,13 @@ export default function Reports() {
             <div><h2>Top workers</h2><Table rows={d.topWorkers} cols={[['name', 'Worker'], ['rating_avg', 'Rating'], ['rating_count', 'Ratings'], ['total_jobs', 'Jobs']]} /></div>
             <div><h2>Bottom workers</h2><Table rows={d.bottomWorkers} cols={[['name', 'Worker'], ['rating_avg', 'Rating'], ['total_jobs', 'Jobs'], ['strikes', 'Strikes']]} /></div>
           </div>
+          <h2>Franchise settlement by city</h2>
+          <Table rows={d.byCity} cols={[
+            ['name', 'City'], ['franchise_operator', 'Operator', (r) => r.franchise_operator || 'company-run'],
+            ['jobs', 'Jobs'], ['gmv', 'GMV', (r) => rupees(r.gmv)], ['commission', 'Commission', (r) => rupees(r.commission)],
+            ['share', 'Share', (r) => `${r.franchise_revenue_share_bps / 100}%`],
+            ['franchise_share', 'Owed to operator', (r) => rupees(r.franchise_share)],
+          ]} />
           <h2>Fraud flags by type</h2>
           <Table rows={d.flagsByType} cols={[['flag_type', 'Type'], ['n', 'Count']]} />
         </>

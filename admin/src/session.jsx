@@ -9,7 +9,7 @@ export function AdminSessionProvider({ children }) {
   async function loadMe() {
     try {
       const me = await api('/admin/me');
-      setState({ loading: false, admin: me.admin, permissions: me.permissions, allPermissions: me.allPermissions });
+      setState({ loading: false, admin: me.admin, permissions: me.permissions, allPermissions: me.allPermissions, cityScoped: me.cityScoped, cities: me.cities || [], cityScopedAllowed: me.cityScopedAllowed || [] });
     } catch {
       setState({ loading: false, admin: null, permissions: [], allPermissions: {} });
     }

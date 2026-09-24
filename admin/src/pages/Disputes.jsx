@@ -15,9 +15,15 @@ export function Disputes() {
   const resolve = (e) => {
     e.preventDefault();
     act.run(async () => {
-      const body = { outcome: f.outcome, resolution: f.resolution, ...(f.outcome === 'refund_partial' ? { amountPaise: Math.round(Number(f.amount) * 100) } : {}) };
+      const body = {
+        outcome: f.outcome, resolution: f.resolution,
+        ...(f.outcome === 'refund_partial' ? { amountPaise: Math.round(Number(f.amount) * 100) } : {}),
+        // datetime-local is entered in IST.
+        ...(f.outcome === 'warranty_revisit' ? { revisitTime: `${f.revisitTime}:00+05:30` } : {}),
+      };
       const r = await api(`/admin/disputes/${sel.id}/resolve`, { method: 'POST', body });
-      setMsg(r.refundRequestId ? 'Resolved. The refund now needs approval by a different admin.' : 'Resolved in the worker\'s favour.');
+      setMsg(r.revisitBookingId ? 'Resolved. A free revisit is booked with the original professional.'
+        : r.refundRequestId ? 'Resolved. The refund now needs approval by a different admin.' : 'Resolved in the worker\'s favour.');
       setSel(null);
       reload();
     });
@@ -47,8 +53,10 @@ export function Disputes() {
               <option value="worker_favour">No refund — release to worker</option>
               <option value="refund_partial">Partial refund</option>
               <option value="refund_full">Full refund</option>
+              {sel.reason === 'warranty_claim' && <option value="warranty_revisit">Free warranty revisit by the same professional</option>}
             </select>
           </Field>
+          {f.outcome === 'warranty_revisit' && <Field label="Revisit time"><input type="datetime-local" value={f.revisitTime || ''} onChange={(e) => setF({ ...f, revisitTime: e.target.value })} required /></Field>}
           {f.outcome === 'refund_partial' && <Field label="Refund amount (₹)"><input type="number" min={1} step="0.01" value={f.amount} onChange={(e) => setF({ ...f, amount: e.target.value })} required /></Field>}
           <Field label="Resolution note (sent to the customer)"><textarea value={f.resolution} onChange={(e) => setF({ ...f, resolution: e.target.value })} minLength={5} required /></Field>
           <div className="row"><button type="button" className="btn" onClick={() => setSel(null)}>Close</button><button className="btn primary" disabled={act.busy}>Resolve</button></div>

@@ -5,8 +5,9 @@ import { ErrorNote, Field, Loading, useAction, useApi } from '../ui.jsx';
 import { Table } from './common.jsx';
 
 export default function Admins() {
-  const { allPermissions, admin: me, can } = useAdmin();
+  const { allPermissions, admin: me, can, cityScopedAllowed } = useAdmin();
   const [data, error, reload] = useApi('/admin/admins');
+  const [cities] = useApi('/admin/cities');
   const [f, setF] = useState(null);
   const act = useAction();
   if (!data) return error ? <ErrorNote error={error} /> : <Loading />;
@@ -17,7 +18,7 @@ export default function Admins() {
     e.preventDefault();
     act.run(async () => {
       if (f.id) await api(`/admin/admins/${f.id}`, { method: 'PATCH', body: { permissions: f.permissions } });
-      else await api('/admin/admins', { method: 'POST', body: { name: f.name, email: f.email, temporaryPassword: f.password, permissions: f.permissions } });
+      else await api('/admin/admins', { method: 'POST', body: { name: f.name, email: f.email, temporaryPassword: f.password, permissions: f.permissions, ...(f.cityIds?.length ? { cityIds: f.cityIds } : {}) } });
       setF(null);
       reload();
     });
@@ -33,6 +34,7 @@ export default function Admins() {
         ['name', 'Name', (r) => `${r.name}${r.id === me.id ? ' (you)' : ''}`], ['email', 'Email'],
         ['permissions', 'Permissions', (r) => (
           <span className="small">
+            {r.city_ids && <span className="badge brand" style={{ marginRight: 4 }}>city manager: {(cities?.cities || []).filter((c) => r.city_ids.includes(c.id)).map((c) => c.name).join(', ')}</span>}
             {r.permissions.join(', ') || <em className="muted">none</em>}
             {r.pending_permissions && (
               <span style={{ display: 'block', marginTop: 4 }}>
@@ -70,8 +72,20 @@ export default function Admins() {
               <Field label="Temporary password (12+ chars, mixed)"><input type="password" autoComplete="new-password" value={f.password} onChange={(e) => setF({ ...f, password: e.target.value })} required minLength={12} /></Field>
             </div>
           )}
+          {!f.id && (
+            <>
+              <h3>City manager (optional)</h3>
+              <p className="small muted">Limit this admin to some cities. City managers can only hold: {cityScopedAllowed.join(', ')}.</p>
+              <div className="row wrap">
+                {(cities?.cities || []).map((c) => (
+                  <label key={c.id} className="check"><input type="checkbox" checked={(f.cityIds || []).includes(c.id)}
+                    onChange={(e) => setF({ ...f, cityIds: e.target.checked ? [...(f.cityIds || []), c.id] : (f.cityIds || []).filter((x) => x !== c.id) })} /><span>{c.name}</span></label>
+                ))}
+              </div>
+            </>
+          )}
           <h3>Permissions</h3>
-          {Object.entries(allPermissions).map(([p, desc]) => (
+          {Object.entries(allPermissions).filter(([p]) => !(f.cityIds?.length) || cityScopedAllowed.includes(p)).map(([p, desc]) => (
             <label key={p} className="check"><input type="checkbox" checked={f.permissions.includes(p)} onChange={() => togglePerm(p)} /><span><span className="mono small">{p}</span> — {desc}</span></label>
           ))}
           <div className="row"><button type="button" className="btn" onClick={() => setF(null)}>Cancel</button><button className="btn primary" disabled={act.busy}>Save</button></div>

@@ -4,6 +4,7 @@ import { api, fmtDateTime, rupees } from '../../api.js';
 import Chat from '../../Chat.jsx';
 import { payOrder } from '../../checkout.js';
 import { ErrorNote, Field, Loading, StatusBadge, useAction, useApi } from '../../ui.jsx';
+import Sponsored from '../../Sponsored.jsx';
 
 const EVENT_LABELS = {
   pending_payment: 'Booking created', paid: 'Payment received', assigned: 'Professional assigned',
@@ -36,7 +37,13 @@ export default function BookingDetail() {
         <div className="row between small"><span className="muted">Where</span><span>{b.address.line1}, {b.address.pincode}</span></div>
         <div className="row between small"><span className="muted">Paid</span><strong>{rupees(b.amount)}{b.isUrgent ? ' (incl. urgent)' : ''}</strong></div>
         {b.worker && <div className="row between small"><span className="muted">Professional</span><span>{b.worker.firstName} · ★ {b.worker.rating || 'New'}</span></div>}
+        {b.isWarrantyRevisit && <div className="banner info small mt">Free warranty revisit — nothing to pay.</div>}
+        {b.warrantyFee > 0 && (
+          <div className="row between small"><span className="muted">Guarantee</span>
+            <span>{b.warrantyActive ? `Covered until ${new Date(b.warrantyUntil).toLocaleDateString('en-IN')}` : b.warrantyUntil ? 'Expired' : 'Starts when you confirm the job'}</span></div>
+        )}
       </div>
+      {loc.state?.justPaid && <Sponsored slot="booking_confirmed" pincode={b.address.pincode} />}
 
       {b.status === 'pending_payment' && b.pendingOrder && (
         <button className="btn primary block" disabled={busy} onClick={() => act(() => payOrder(b.pendingOrder, { description: b.serviceName }), 'Payment successful!')}>
@@ -82,7 +89,11 @@ export default function BookingDetail() {
       {['in_progress', 'confirmed'].includes(b.status) && !b.disputeStatus && panel !== 'dispute' && (
         <button className="btn block" onClick={() => setPanel('dispute')}>Report a problem</button>
       )}
+      {b.status === 'confirmed' && b.warrantyActive && panel !== 'warranty' && (
+        <button className="btn primary block" onClick={() => setPanel('warranty')}>Claim free revisit under guarantee</button>
+      )}
       {panel === 'dispute' && <DisputeForm busy={busy} onSubmit={(body) => act(() => api(`/bookings/${id}/dispute`, { method: 'POST', body }), 'Your issue has been raised. Our team will get back to you.')} />}
+      {panel === 'warranty' && <DisputeForm warranty busy={busy} onSubmit={(body) => act(() => api(`/bookings/${id}/dispute`, { method: 'POST', body }), 'Guarantee claim raised. We will schedule a free revisit.')} />}
 
       {b.cancellation && (
         <div className="card">
@@ -123,13 +134,13 @@ function ReviewForm({ onSubmit, busy }) {
   );
 }
 
-function DisputeForm({ onSubmit, busy }) {
-  const [reason, setReason] = useState('not_completed');
+function DisputeForm({ onSubmit, busy, warranty = false }) {
+  const [reason, setReason] = useState(warranty ? 'warranty_claim' : 'not_completed');
   const [description, setDesc] = useState('');
   return (
     <form className="card" onSubmit={(e) => { e.preventDefault(); onSubmit({ reason, description }); }}>
-      <h2>Report a problem</h2>
-      <Field label="What went wrong?">
+      <h2>{warranty ? 'Claim under guarantee' : 'Report a problem'}</h2>
+      {!warranty && <Field label="What went wrong?">
         <select value={reason} onChange={(e) => setReason(e.target.value)}>
           <option value="not_completed">Job not completed</option>
           <option value="poor_quality">Poor quality</option>
@@ -138,7 +149,7 @@ function DisputeForm({ onSubmit, busy }) {
           <option value="asked_for_cash">Asked to pay in cash</option>
           <option value="other">Other</option>
         </select>
-      </Field>
+      </Field>}
       <Field label="Details"><textarea value={description} onChange={(e) => setDesc(e.target.value)} minLength={10} maxLength={2000} required /></Field>
       <p className="small muted">The professional's payout is held while we review.</p>
       <button className="btn primary block" disabled={busy}>Submit</button>

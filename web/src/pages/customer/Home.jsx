@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { api, rupees } from '../../api.js';
 import { useSession } from '../../session.jsx';
 import { ErrorNote, Field, Loading, useApi } from '../../ui.jsx';
+import Sponsored from '../../Sponsored.jsx';
 
 const CATEGORY_LABELS = {
   cleaning: 'Cleaning', ac_service: 'AC service', pest_control: 'Pest control', plumbing: 'Plumbing',
@@ -36,6 +37,7 @@ export default function Home() {
         Prices are fixed and shown upfront. <strong>Only pay inside the app</strong> — it protects your payment and your service guarantee.
       </div>
       <ErrorNote error={error} />
+      <Sponsored slot="home_banner" category={cat === 'all' ? undefined : cat} />
       {!data && !error && <Loading />}
       {services.map((s) => (
         <Link key={s.id} to={`/services/${s.id}`} className="card list-item">

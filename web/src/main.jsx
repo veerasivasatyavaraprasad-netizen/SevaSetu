@@ -17,6 +17,7 @@ import WorkerDashboard from './pages/worker/Dashboard.jsx';
 import JobDetail from './pages/worker/JobDetail.jsx';
 import Earnings from './pages/worker/Earnings.jsx';
 import Policy from './pages/worker/Policy.jsx';
+import Featured from './pages/worker/Featured.jsx';
 
 function Shell({ tabs, children }) {
   return (
@@ -74,6 +75,7 @@ function WorkerApp() {
         <Route path="/jobs/:id" element={<JobDetail />} />
         <Route path="/earnings" element={<Earnings />} />
         <Route path="/policy" element={<Policy />} />
+        <Route path="/featured" element={<Featured />} />
         <Route path="/profile" element={<Profile />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

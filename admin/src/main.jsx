@@ -18,6 +18,8 @@ import Reports from './pages/Reports.jsx';
 import Audit from './pages/Audit.jsx';
 import Admins from './pages/Admins.jsx';
 import Jobs from './pages/Jobs.jsx';
+import Cities from './pages/Cities.jsx';
+import Ads from './pages/Ads.jsx';
 
 // [path, label, element, any-of permissions]
 const SECTIONS = [
@@ -31,6 +33,8 @@ const SECTIONS = [
   ['/fraud', 'Fraud queue', <Fraud />, ['fraud.review']],
   ['/changes', 'Change approvals', <Changes />, ['changes.approve', 'commission.request', 'workers.enforce']],
   ['/services', 'Services & pricing', <Services />, ['catalog.manage']],
+  ['/cities', 'Cities & franchises', <Cities />, ['cities.manage']],
+  ['/ads', 'Sponsored placements', <Ads />, ['ads.manage']],
   ['/reports', 'Reports', <Reports />, ['reports.view']],
   ['/audit', 'Audit log', <Audit />, ['audit.view']],
   ['/admins', 'Admins & access', <Admins />, ['admins.manage', 'changes.approve']],
@@ -38,7 +42,7 @@ const SECTIONS = [
 ];
 
 function Layout() {
-  const { admin, permissions, signOut } = useAdmin();
+  const { admin, permissions, signOut, cityScoped, cities } = useAdmin();
   const allowed = SECTIONS.filter(([, , , perms]) => perms.some((p) => permissions.includes(p)));
   return (
     <div className="admin">
@@ -46,7 +50,10 @@ function Layout() {
         <span className="brand">SevaSetu <span>Admin</span></span>
         {allowed.map(([to, label]) => <NavLink key={to} to={to} end={to === '/'}>{label}</NavLink>)}
         <a href="#signout" onClick={(e) => { e.preventDefault(); signOut(); }}>Sign out</a>
-        <span className="small muted" style={{ padding: '12px', display: 'block' }}>{admin.name}<br />{admin.email}</span>
+        <span className="small muted" style={{ padding: '12px', display: 'block' }}>
+          {admin.name}<br />{admin.email}
+          {cityScoped && <><br /><span className="badge brand">City manager: {cities.map((c) => c.name).join(', ')}</span></>}
+        </span>
       </nav>
       <main className="content">
         <Routes>

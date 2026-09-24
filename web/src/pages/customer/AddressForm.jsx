@@ -19,6 +19,8 @@ export default function AddressForm({ onSaved, onCancel }) {
     e.preventDefault();
     run(async () => {
       if (!pos) throw new Error('Please pin your location so the professional can find you');
+      const s = await api(`/serviceability?pincode=${encodeURIComponent(f.pincode)}`);
+      if (!s.serviceable) throw new Error(`Sorry, we don't serve PIN code ${f.pincode} yet.`);
       const r = await api('/addresses', { method: 'POST', body: { ...f, lat: pos.lat, lng: pos.lng } });
       onSaved(r.id);
     });

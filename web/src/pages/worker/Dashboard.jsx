@@ -37,12 +37,16 @@ export default function Dashboard() {
         </Link>
       ))}
 
-      <h2 className="mt">New job requests</h2>
+      <h2 className="mt">New job requests {open?.featured && <span className="badge ok">★ Featured</span>}</h2>
+      {open && !open.featured && open.hiddenInPriorityWindow > 0 && (
+        <div className="banner info small">{open.hiddenInPriorityWindow} new job(s) are with featured professionals right now and open to you shortly. <Link to="/featured">Get jobs first →</Link></div>
+      )}
+      {open && !open.featured && open.hiddenInPriorityWindow === 0 && <p className="small"><Link to="/featured">★ Become featured to see new jobs first</Link></p>}
       <ErrorNote error={openErr || error} />
       {open?.jobs.length === 0 && <p className="small muted">No open requests in {w.serviceAreaPincode} right now.</p>}
       {open?.jobs.map((j) => (
         <div key={j.id} className="card">
-          <div className="row between"><strong>{j.serviceName}</strong>{j.isUrgent && <span className="badge warn">Urgent</span>}</div>
+          <div className="row between"><strong>{j.serviceName}</strong>{j.isUrgent && <span className="badge warn">Urgent</span>}{j.isWarrantyRevisit && <span className="badge">Warranty revisit</span>}</div>
           <div className="small muted">{fmtDateTime(j.scheduledTime)} · PIN {j.pincode} · ~{j.durationMinutes} min</div>
           <div className="row between mt">
             <span>You earn <strong>{rupees(j.yourEarning)}</strong></span>
