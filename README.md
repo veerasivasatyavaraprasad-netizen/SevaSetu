@@ -134,7 +134,11 @@ To use an external scheduler instead, set `RUN_SCHEDULER=false` and run `npm run
 
 ---
 
-## Deploying for free on Oracle Cloud (India) — recommended
+## Deploying for free with no card: Koyeb + Neon
+
+One free Koyeb server runs the app at `/` and the admin panel at `/ops/`, with a free Neon PostgreSQL database. Step-by-step guide: **[deploy/koyeb/README.md](deploy/koyeb/README.md)**.
+
+## Deploying for free on Oracle Cloud (India)
 
 One server in Mumbai or Hyderabad on Oracle's Always Free tier runs everything:
 - the app, and the admin panel on its own address;

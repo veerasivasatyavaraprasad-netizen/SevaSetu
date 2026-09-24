@@ -47,7 +47,10 @@ export const config = {
     financeEmail: env.BOOTSTRAP_FINANCE_EMAIL || '',
     financePassword: env.BOOTSTRAP_FINANCE_PASSWORD || '',
   },
-  trustProxy: int('TRUST_PROXY_HOPS', 0),
+  // Reverse proxies in front of the API, for correct client IPs. "all"
+  // trusts the whole X-Forwarded-For chain (for hosts with an unknown
+  // number of proxy hops); per-phone and per-account limits still apply.
+  trustProxy: env.TRUST_PROXY_HOPS === 'all' ? true : int('TRUST_PROXY_HOPS', 0),
 
   jwtSecret: env.JWT_SECRET || DEV_KEY,
   // 32-byte keys, base64 encoded. Separate keys for encryption and for

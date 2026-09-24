@@ -82,6 +82,11 @@ export function createApp() {
       res.status(413).json({ error: 'too_large', message: 'Request too large' });
       return;
     }
+    if (err?.status === 404 || err?.statusCode === 404) {
+      // Missing static asset (express.static with fallthrough: false).
+      res.status(404).json({ error: 'not_found', message: 'Not found' });
+      return;
+    }
     if (err?.type === 'entity.parse.failed') {
       res.status(400).json({ error: 'bad_request', message: 'Malformed JSON' });
       return;
@@ -108,23 +113,34 @@ const FRONTEND_CSP = {
   admin: "default-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data: blob:; frame-src blob:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'",
 };
 
-// Serves a built frontend (web/dist or admin/dist) with SPA fallback, so
-// the app and its API share one origin.
-function mountFrontend(app, name) {
-  if (!FRONTEND_CSP[name]) throw new Error(`SERVE_FRONTEND must be "web" or "admin"`);
+// Serves built frontends from this process, so they share an origin with
+// the API. SERVE_FRONTEND:
+//   web   — customer/worker app at /
+//   admin — admin panel at /ops/ (its own host; / redirects there)
+//   all   — both on one host (free single-server hosting)
+function mountFrontend(app, mode) {
+  if (!['web', 'admin', 'all'].includes(mode)) throw new Error('SERVE_FRONTEND must be "web", "admin" or "all"');
+  if (mode !== 'web') mountSpa(app, 'admin', '/ops');
+  if (mode === 'admin') app.get('/', (_req, res) => res.redirect(302, '/ops/'));
+  if (mode !== 'admin') mountSpa(app, 'web', '');
+}
+
+function mountSpa(app, name, prefix) {
   const dir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', name, 'dist');
   const index = path.join(dir, 'index.html');
-  if (!fs.existsSync(index)) throw new Error(`SERVE_FRONTEND=${name} but ${index} is missing; build it first`);
+  if (!fs.existsSync(index)) throw new Error(`${index} is missing; build the ${name} frontend first`);
   const headers = (res) => {
     res.set('Content-Security-Policy', FRONTEND_CSP[name]);
     res.set('Permissions-Policy', name === 'web' ? 'geolocation=(self), camera=(self), microphone=()' : 'geolocation=(), camera=(), microphone=()');
     if (name === 'admin') res.set('X-Robots-Tag', 'noindex, nofollow');
   };
-  app.use('/assets', express.static(path.join(dir, 'assets'), {
-    immutable: true, maxAge: '1y', index: false,
+  app.use(`${prefix}/assets`, express.static(path.join(dir, 'assets'), {
+    immutable: true, maxAge: '1y', index: false, fallthrough: false,
     setHeaders: (res) => { headers(res); res.set('Cache-Control', 'public, max-age=31536000, immutable'); },
   }));
-  app.get(/^(?!\/api\/).*/, (_req, res) => {
+  // SPA fallback: every non-API path under the prefix gets index.html.
+  const pattern = prefix ? new RegExp(`^${prefix}(/.*)?$`) : /^(?!\/api\/|\/ops(\/|$)).*/;
+  app.get(pattern, (_req, res) => {
     headers(res);
     res.set('Cache-Control', 'no-cache');
     res.sendFile(index);
