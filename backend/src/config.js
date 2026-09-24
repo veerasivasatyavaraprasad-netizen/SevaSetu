@@ -82,6 +82,9 @@ export const config = {
     urgentWithinHours: 6,
     freeCancelHoursBefore: 2,
     lateCancelFeeBps: int('LATE_CANCEL_FEE_BPS', 1000),
+    warrantyDays: 30, // plan §2: 30-day service guarantee
+    featuredPriorityMinutes: int('FEATURED_PRIORITY_MINUTES', 10),
+    featuredPriorityUrgentMinutes: int('FEATURED_PRIORITY_URGENT_MINUTES', 2),
   },
 
   defaultCommissionBps: int('DEFAULT_COMMISSION_BPS', 2000), // 20%, within 15–25%

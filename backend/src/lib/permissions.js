@@ -18,7 +18,16 @@ export const PERMISSIONS = {
   'reports.view': 'View reports and dashboards',
   'audit.view': 'View and verify the audit log',
   'admins.manage': 'Create admin accounts, change permissions, run access reviews',
+  'cities.manage': 'Launch cities, manage serviceable PIN codes and franchise terms',
+  'ads.manage': 'Manage sponsored brand placements',
 };
+
+// §4 city manager: an admin scoped to some cities may only view city
+// reports, approve local workers and run local operations. They can never
+// touch commission, payouts, refunds, pricing, admins or gateway settings.
+export const CITY_SCOPED_ALLOWED = [
+  'reports.view', 'workers.kyc', 'workers.enforce', 'bookings.manage', 'fraud.review', 'disputes.manage', 'customers.view',
+];
 
 // Section 9.8: "no single internal role can both approve a payout AND
 // change a worker's commission rate or bank details". Bank details can't
@@ -33,9 +42,13 @@ export const CONFLICTS = [
   ['admins.manage', 'payouts.approve'],
 ];
 
-export function validatePermissionSet(perms) {
+export function validatePermissionSet(perms, { cityScoped = false } = {}) {
   const unknown = perms.filter((p) => !(p in PERMISSIONS));
   if (unknown.length) return `Unknown permissions: ${unknown.join(', ')}`;
+  if (cityScoped) {
+    const bad = perms.filter((p) => !CITY_SCOPED_ALLOWED.includes(p));
+    if (bad.length) return `City managers cannot hold: ${bad.join(', ')}`;
+  }
   for (const [a, b] of CONFLICTS) {
     if (perms.includes(a) && perms.includes(b)) {
       return `Separation of duties: "${a}" and "${b}" cannot be held by the same admin`;

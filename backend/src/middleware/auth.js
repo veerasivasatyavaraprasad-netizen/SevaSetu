@@ -19,7 +19,7 @@ export function authenticate({ allowPendingMfa = false } = {}) {
     const { rows } = await query(
       `SELECT s.id, s.revoked_at, s.expires_at, s.last_seen_at, s.mfa_satisfied,
               u.id AS user_id, u.role, u.status, u.name,
-              a.permissions,
+              a.permissions, a.city_ids,
               w.id AS worker_id, w.kyc_status, w.status AS worker_status, w.suspended_until,
               w.policy_ack_version
          FROM sessions s
@@ -61,6 +61,8 @@ export function authenticate({ allowPendingMfa = false } = {}) {
       userStatus: r.status,
       mfa: r.mfa_satisfied,
       permissions: r.permissions || [],
+      // City managers (§4): null = all cities.
+      cityIds: r.role === 'admin' ? (r.city_ids || null) : null,
       worker: r.worker_id ? {
         id: r.worker_id,
         kycStatus: r.kyc_status,

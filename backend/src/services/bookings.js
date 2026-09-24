@@ -6,7 +6,7 @@ import { config } from '../config.js';
 import { decrypt, decryptJson, encrypt, encryptJson, randomDigits, timingSafeEqualStr } from '../lib/crypto.js';
 import { badRequest, conflict, forbidden, notFound } from '../lib/errors.js';
 import { distanceMeters } from '../lib/geo.js';
-import { applyBps, splitCommission } from '../lib/money.js';
+import { applyBps, splitBooking } from '../lib/money.js';
 import { applyStrike, raiseFlag } from './fraud.js';
 import { notify } from './notify.js';
 import { payments } from './payments.js';
@@ -41,11 +41,40 @@ export function istHour(date) {
   return new Date(date.getTime() + IST_OFFSET_MS).getUTCHours();
 }
 
-export function quote(service, scheduledTime, now = new Date()) {
+export function quote(service, scheduledTime, { withWarranty = false } = {}, now = new Date()) {
   const lead = scheduledTime.getTime() - now.getTime();
   const isUrgent = lead < config.booking.urgentWithinHours * 3600_000;
   const premium = isUrgent ? applyBps(service.fixed_price_paise, service.urgent_premium_bps) : 0;
-  return { isUrgent, basePrice: service.fixed_price_paise, urgentPremium: premium, total: service.fixed_price_paise + premium };
+  const warrantyAvailable = service.warranty_fee_paise > 0;
+  const warrantyFee = withWarranty && warrantyAvailable ? service.warranty_fee_paise : 0;
+  return {
+    isUrgent,
+    basePrice: service.fixed_price_paise,
+    urgentPremium: premium,
+    warrantyAvailable,
+    warrantyOptionFee: service.warranty_fee_paise,
+    warrantyFee,
+    warrantyDays: config.booking.warrantyDays,
+    total: service.fixed_price_paise + premium + warrantyFee,
+  };
+}
+
+// The city serving a PIN code, or a clear refusal (Phase 3: cities).
+export async function cityForPincode(db, pincode) {
+  const { rows } = await db.query(
+    `SELECT c.id FROM city_pincodes cp JOIN cities c ON c.id = cp.city_id AND c.active WHERE cp.pincode = $1`,
+    [pincode],
+  );
+  if (!rows[0]) throw badRequest(`We don't serve PIN code ${pincode} yet`);
+  return rows[0].id;
+}
+
+// Featured workers (Phase 3) see and can accept new jobs first.
+export const FEATURED_SQL = `EXISTS (SELECT 1 FROM featured_listings fl WHERE fl.worker_id = w.id
+  AND fl.status = 'active' AND now() >= fl.starts_at AND now() < fl.ends_at)`;
+
+export function priorityWindowMinutes(booking) {
+  return booking.is_urgent ? config.booking.featuredPriorityUrgentMinutes : config.booking.featuredPriorityMinutes;
 }
 
 export function validateSlot(scheduledTime, now = new Date()) {
@@ -59,7 +88,7 @@ export function validateSlot(scheduledTime, now = new Date()) {
 }
 
 // ------------------------------------------------------------ create
-export async function createBooking(db, { customerId, serviceId, addressId, scheduledTime }) {
+export async function createBooking(db, { customerId, serviceId, addressId, scheduledTime, withWarranty = false }) {
   const { rows: s } = await db.query('SELECT * FROM services WHERE id = $1 AND active', [serviceId]);
   if (!s[0]) throw notFound('Service not available');
   const { rows: a } = await db.query(
@@ -68,17 +97,19 @@ export async function createBooking(db, { customerId, serviceId, addressId, sche
   );
   if (!a[0]) throw notFound('Address not found');
   validateSlot(scheduledTime);
+  if (withWarranty && !(s[0].warranty_fee_paise > 0)) throw badRequest('Warranty is not offered for this service');
+  const addr = a[0];
+  const cityId = await cityForPincode(db, addr.pincode);
   // Section 9.1: price is fixed server-side from the catalogue, never
   // supplied by the client and never negotiated on site.
-  const q = quote(s[0], scheduledTime);
-  const addr = a[0];
+  const q = quote(s[0], scheduledTime, { withWarranty });
   const { rows } = await db.query(
     `INSERT INTO bookings (customer_id, service_id, address_id, address_enc, pincode, lat, lng,
-                           scheduled_time, is_urgent, amount, completion_otp_enc)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
+                           scheduled_time, is_urgent, amount, warranty_fee, city_id, completion_otp_enc)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING *`,
     [customerId, serviceId, addressId,
       encryptJson({ ...decryptJson(addr.details_enc), city: addr.city, pincode: addr.pincode, label: addr.label }),
-      addr.pincode, addr.lat, addr.lng, scheduledTime, q.isUrgent, q.total,
+      addr.pincode, addr.lat, addr.lng, scheduledTime, q.isUrgent, q.total, q.warrantyFee, cityId,
       // Section 9.3: 4-digit completion OTP, shown only to the customer.
       encrypt(randomDigits(4))],
   );
@@ -134,6 +165,24 @@ export async function markPaymentCaptured(db, { orderId, paymentId, amount }) {
         reason: 'Payment received for a cancelled booking', autoApprove: true });
       db.afterCommit?.(() => import('./refunds.js').then((m) => m.processApprovedRefund(r.id)));
     }
+  } else if (pay.featured_listing_id) {
+    // Featured listing (Phase 3): starts now, or when the current one ends.
+    const { rows: fl } = await db.query(
+      `UPDATE featured_listings f
+          SET status = 'active',
+              starts_at = GREATEST(now(), COALESCE((SELECT max(ends_at) FROM featured_listings o
+                                                     WHERE o.worker_id = f.worker_id AND o.status = 'active'), now())),
+              ends_at = GREATEST(now(), COALESCE((SELECT max(ends_at) FROM featured_listings o
+                                                   WHERE o.worker_id = f.worker_id AND o.status = 'active'), now()))
+                        + (f.days || ' days')::interval
+        WHERE f.id = $1 AND f.status = 'pending_payment'
+        RETURNING f.*, (SELECT user_id FROM workers WHERE id = f.worker_id) AS user_id`,
+      [pay.featured_listing_id],
+    );
+    if (fl[0]) {
+      await notify(db, fl[0].user_id, 'featured', 'You are now a featured professional',
+        `Until ${new Date(fl[0].ends_at).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' })} you see new jobs before others.`);
+    }
   } else if (pay.subscription_id) {
     const { rows: sub } = await db.query(
       `UPDATE subscriptions SET status = 'active' WHERE id = $1 AND status = 'pending_payment' RETURNING *`,
@@ -149,14 +198,17 @@ export async function markPaymentCaptured(db, { orderId, paymentId, amount }) {
 
 export async function notifyEligibleWorkers(db, booking) {
   const { rows } = await db.query(
-    `SELECT w.user_id FROM workers w JOIN services s ON s.id = $2
+    `SELECT w.user_id, ${FEATURED_SQL} AS featured FROM workers w JOIN services s ON s.id = $2
       WHERE w.kyc_status = 'approved' AND w.status = 'active' AND w.service_area_pincode = $1
         AND w.skill_category = s.category AND w.policy_ack_version = $3
-      LIMIT 50`,
+      ORDER BY featured DESC LIMIT 50`,
     [booking.pincode, booking.service_id, config.policyVersion],
   );
+  const mins = priorityWindowMinutes(booking);
   for (const r of rows) {
-    await notify(db, r.user_id, 'job_request', 'New job near you', 'A paid job is available in your area. Open the app to accept.');
+    await notify(db, r.user_id, 'job_request', 'New job near you', r.featured
+      ? 'A paid job is available in your area. As a featured professional you can accept it now.'
+      : `A paid job is available in your area. It opens to you in ${mins} minutes.`);
   }
 }
 
@@ -170,6 +222,12 @@ export async function acceptJob(db, { bookingId, worker }) {
     throw forbidden('This job is outside your service area or skill');
   }
   if (!w[0].payout_verified_at) throw forbidden('Verify your payout account before accepting jobs');
+  // Featured-listing priority window (Phase 3).
+  const { rows: feat } = await db.query(`SELECT ${FEATURED_SQL} AS featured FROM workers w WHERE w.id = $1`, [worker.id]);
+  const openedAt = new Date(booking.paid_at || booking.created_at).getTime();
+  if (!feat[0].featured && Date.now() < openedAt + priorityWindowMinutes(booking) * 60_000) {
+    throw conflict('This job is still in the priority window for featured professionals');
+  }
   // A worker can't take a job booked from their own phone number.
   const { rows: same } = await db.query(
     `SELECT 1 FROM users c, users wu WHERE c.id = $1 AND wu.id = $2 AND c.phone_hash = wu.phone_hash`,
@@ -190,7 +248,7 @@ export async function acceptJob(db, { bookingId, worker }) {
   );
   if (clash[0]) throw conflict('You already have a job at that time');
   // Section 7.2: commission snapshotted from the worker's own rate.
-  const split = splitCommission(booking.amount, w[0].commission_rate_bps);
+  const split = splitBooking(booking.amount, booking.warranty_fee, w[0].commission_rate_bps);
   const updated = await transition(db, booking, 'assigned', {
     actorId: worker.userId, actorRole: 'worker', meta: { workerId: worker.id },
     set: {
@@ -325,9 +383,14 @@ export async function completeJob(db, { bookingId, worker, otp, lat, lng, accura
 
 // Section 7.1 step 5/6: confirmation moves the worker share into the payout queue.
 export async function confirmBooking(db, booking, { actorId = null, actorRole, auto = false }) {
-  const updated = await transition(db, booking, 'confirmed', {
-    actorId, actorRole, meta: { auto }, set: { confirmed_at: new Date(), auto_confirmed: auto },
-  });
+  const now = new Date();
+  const set = { confirmed_at: now, auto_confirmed: auto };
+  // Warranty cover starts at first confirmation (a dispute that restores
+  // the booking to confirmed keeps the original window).
+  if (booking.warranty_fee > 0 && !booking.warranty_until) {
+    set.warranty_until = new Date(now.getTime() + config.booking.warrantyDays * 86400_000);
+  }
+  const updated = await transition(db, booking, 'confirmed', { actorId, actorRole, meta: { auto }, set });
   await db.query(
     `INSERT INTO payout_items (booking_id, worker_id, amount) VALUES ($1, $2, $3) ON CONFLICT (booking_id) DO NOTHING`,
     [booking.id, booking.worker_id, booking.worker_payout],
@@ -401,6 +464,10 @@ export function customerView(b, extra = {}) {
     cancelledAt: b.cancelled_at,
     createdAt: b.created_at,
     subscriptionId: b.subscription_id,
+    warrantyFee: b.warranty_fee,
+    warrantyUntil: b.warranty_until,
+    warrantyActive: !!b.warranty_until && new Date(b.warranty_until) > new Date(),
+    isWarrantyRevisit: !!b.warranty_parent_id,
     ...extra,
   };
 }
@@ -417,7 +484,8 @@ export function workerView(b, { assignedToMe, commissionRateBps = null }) {
     pincode: b.pincode,
     yourEarning: assignedToMe
       ? b.worker_payout
-      : (commissionRateBps === null ? null : splitCommission(b.amount, commissionRateBps).workerPayout),
+      : (commissionRateBps === null ? null : splitBooking(b.amount, b.warranty_fee, commissionRateBps).workerPayout),
+    isWarrantyRevisit: !!b.warranty_parent_id,
   };
   if (!assignedToMe) return base;
   const addr = decryptJson(b.address_enc);
@@ -430,4 +498,39 @@ export function workerView(b, { assignedToMe, commissionRateBps = null }) {
     confirmedAt: b.confirmed_at,
     otpAttemptsLeft: Math.max(0, config.booking.completionOtpMaxAttempts - b.completion_otp_attempts),
   };
+}
+
+// Warranty claim resolved as a free revisit (Phase 3): a zero-price visit,
+// prepaid by the original booking, assigned back to the original worker,
+// and completed with the same GPS + OTP controls.
+export async function createWarrantyRevisit(db, { parent, scheduledTime, actor }) {
+  if (!parent.warranty_until || new Date(parent.warranty_until) <= new Date()) {
+    throw conflict('This booking is not under an active warranty');
+  }
+  const { rows: w } = await db.query(
+    `SELECT id, user_id, status, kyc_status FROM workers WHERE id = $1`, [parent.worker_id]);
+  if (!w[0] || w[0].status !== 'active' || w[0].kyc_status !== 'approved') {
+    throw conflict('The original professional is not active; resolve this claim with a refund instead');
+  }
+  validateSlot(scheduledTime);
+  const { rows } = await db.query(
+    `INSERT INTO bookings (customer_id, service_id, address_id, address_enc, pincode, lat, lng, scheduled_time,
+                           amount, warranty_parent_id, city_id, completion_otp_enc, status, paid_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0, $9, $10, $11, 'paid', now()) RETURNING *`,
+    [parent.customer_id, parent.service_id, parent.address_id, parent.address_enc, parent.pincode, parent.lat,
+      parent.lng, scheduledTime, parent.id, parent.city_id, encrypt(randomDigits(4))],
+  );
+  await db.query(
+    `INSERT INTO booking_events (booking_id, to_status, actor_id, actor_role, meta) VALUES ($1, 'paid', $2, 'admin', $3)`,
+    [rows[0].id, actor.id, JSON.stringify({ warrantyParentId: parent.id })],
+  );
+  const revisit = await transition(db, rows[0], 'assigned', {
+    actorId: actor.id, actorRole: 'admin', meta: { workerId: w[0].id, warrantyRevisit: true },
+    set: { worker_id: w[0].id, accepted_at: new Date(), commission_rate_bps: 0, commission_amount: 0, worker_payout: 0 },
+  });
+  await notify(db, w[0].user_id, 'job_assigned', 'Warranty revisit assigned',
+    'A customer you served raised a warranty claim. Please revisit at the scheduled time; the job is completed with a new customer code.');
+  await notify(db, parent.customer_id, 'booking', 'Free warranty revisit booked',
+    'Your professional will revisit at no cost. Share the new completion code only when the issue is fixed.');
+  return revisit;
 }

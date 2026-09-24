@@ -12,7 +12,9 @@ import { WORKER_POLICY_SHA256, WORKER_POLICY_TEXT } from '../lib/policy.js';
 import { parse } from '../lib/validate.js';
 import { authenticate, requireApprovedWorker, requireRole } from '../middleware/auth.js';
 import { audit } from '../services/audit.js';
-import { acceptJob, checkIn, completeJob, declineJob, workerView, workerWithdraw } from '../services/bookings.js';
+import {
+  acceptJob, checkIn, cityForPincode, completeJob, declineJob, FEATURED_SQL, priorityWindowMinutes, workerView, workerWithdraw,
+} from '../services/bookings.js';
 import { payments } from '../services/payments.js';
 
 export const workerRouter = Router();
@@ -82,6 +84,7 @@ workerRouter.post('/onboarding', async (req, res) => {
   const w = await loadWorker(req.auth.userId);
   assertEditableKyc(w);
   await tx(async (db) => {
+    await cityForPincode(db, body.serviceAreaPincode);
     await db.query('UPDATE users SET name = $2, updated_at = now() WHERE id = $1', [req.auth.userId, body.name]);
     await db.query(
       `UPDATE workers SET skill_category = $2, service_area_pincode = $3, id_type = $4, id_number_enc = $5,
@@ -202,7 +205,9 @@ const canWork = requireApprovedWorker({ forWork: true });
 
 workerRouter.get('/jobs/open', canWork, async (req, res) => {
   const w = await loadWorker(req.auth.userId);
-  const { rows } = await query(
+  const { rows: f } = await query(`SELECT ${FEATURED_SQL} AS featured FROM workers w WHERE w.id = $1`, [w.id]);
+  const featured = f[0].featured;
+  const { rows: all } = await query(
     `SELECT b.*, s.name AS service_name, s.duration_minutes FROM bookings b JOIN services s ON s.id = b.service_id
       WHERE b.status = 'paid' AND b.worker_id IS NULL AND b.pincode = $1 AND s.category = $2
         AND b.scheduled_time > now()
@@ -210,7 +215,12 @@ workerRouter.get('/jobs/open', canWork, async (req, res) => {
       ORDER BY b.scheduled_time LIMIT 50`,
     [w.service_area_pincode, w.skill_category, w.id],
   );
+  // Featured professionals see new jobs first (Phase 3).
+  const rows = featured ? all : all.filter((b) =>
+    Date.now() >= new Date(b.paid_at || b.created_at).getTime() + priorityWindowMinutes(b) * 60_000);
   res.json({
+    featured,
+    hiddenInPriorityWindow: all.length - rows.length,
     jobs: rows.map((b) => ({
       ...workerView(b, { assignedToMe: false, commissionRateBps: w.commission_rate_bps }),
       serviceName: b.service_name,
@@ -332,4 +342,33 @@ workerRouter.get('/reviews', approved, async (req, res) => {
     [req.auth.worker.id],
   );
   res.json({ reviews: rows });
+});
+
+// ------------------------------------------------------ featured listing
+// Plan §2: workers pay for priority visibility — featured professionals
+// get new jobs in their area before everyone else.
+workerRouter.get('/featured', approved, async (req, res) => {
+  const [plans, mine] = await Promise.all([
+    query('SELECT id, name, days, price_paise FROM featured_plans WHERE active ORDER BY days'),
+    query(
+      `SELECT id, days, amount, status, starts_at, ends_at FROM featured_listings
+        WHERE worker_id = $1 AND status = 'active' AND ends_at > now() ORDER BY ends_at DESC`, [req.auth.worker.id]),
+  ]);
+  res.json({ plans: plans.rows, active: mine.rows, priorityMinutes: config.booking.featuredPriorityMinutes });
+});
+
+workerRouter.post('/featured', canWork, async (req, res) => {
+  const body = parse(z.object({ planId: uuid }).strict(), req.body);
+  const out = await tx(async (db) => {
+    const { rows: p } = await db.query('SELECT * FROM featured_plans WHERE id = $1 AND active', [body.planId]);
+    if (!p[0]) throw notFound('Plan not available');
+    const { rows: fl } = await db.query(
+      `INSERT INTO featured_listings (worker_id, plan_id, amount, days) VALUES ($1, $2, $3, $4) RETURNING *`,
+      [req.auth.worker.id, p[0].id, p[0].price_paise, p[0].days]);
+    const order = await payments.createOrder({ amount: p[0].price_paise, receipt: `ft_${fl[0].id.slice(0, 30)}`, notes: { featured_listing_id: fl[0].id } });
+    await db.query('INSERT INTO payments (featured_listing_id, amount, gateway, gateway_order_id) VALUES ($1, $2, $3, $4)',
+      [fl[0].id, p[0].price_paise, payments.name, order.orderId]);
+    return { orderId: order.orderId, amount: p[0].price_paise, currency: 'INR', keyId: payments.publicKey(), provider: payments.name };
+  });
+  res.status(201).json({ order: out });
 });

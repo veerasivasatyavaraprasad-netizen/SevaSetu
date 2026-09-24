@@ -11,7 +11,7 @@ import { parse } from '../lib/validate.js';
 import { authenticate, requireRole } from '../middleware/auth.js';
 import { audit } from '../services/audit.js';
 import {
-  cancellationTerms, confirmBooking, createBooking, customerCancel, customerView, lockBooking, markPaymentCaptured,
+  cancellationTerms, cityForPincode, confirmBooking, createBooking, customerCancel, customerView, lockBooking, markPaymentCaptured,
   quote, transition, validateSlot,
 } from '../services/bookings.js';
 import { holdPayoutItem, raiseFlag } from '../services/fraud.js';
@@ -48,6 +48,58 @@ customerRouter.get('/services/:id', async (req, res) => {
     [id],
   );
   res.json({ service: rows[0], reviews });
+});
+
+customerRouter.get('/serviceability', async (req, res) => {
+  const q = parse(z.object({ pincode: z.string().regex(/^[1-9]\d{5}$/) }), req.query);
+  const { rows } = await query(
+    `SELECT c.name FROM city_pincodes cp JOIN cities c ON c.id = cp.city_id AND c.active WHERE cp.pincode = $1`, [q.pincode]);
+  res.json({ serviceable: !!rows[0], city: rows[0]?.name || null });
+});
+
+// Sponsored placements (Phase 3 advertising). Always labelled "Sponsored"
+// by the apps; links only to https URLs an admin entered.
+customerRouter.get('/ads', async (req, res) => {
+  const q = parse(z.object({
+    slot: z.enum(['home_banner', 'booking_confirmed']),
+    category: z.string().max(40).optional(),
+    pincode: z.string().regex(/^[1-9]\d{5}$/).optional(),
+  }), req.query);
+  const { rows } = await query(
+    `UPDATE ad_placements SET impressions = impressions + 1
+      WHERE id IN (
+        SELECT a.id FROM ad_placements a
+         WHERE a.active AND a.slot = $1
+           AND (now() AT TIME ZONE 'Asia/Kolkata')::date BETWEEN a.starts_on AND a.ends_on
+           AND (a.category IS NULL OR a.category = $2)
+           AND (a.city_id IS NULL OR a.city_id = (SELECT city_id FROM city_pincodes WHERE pincode = $3))
+         ORDER BY random() LIMIT 2)
+      RETURNING id, brand, title, body, (image IS NOT NULL) AS has_image`,
+    [q.slot, q.category || null, q.pincode || null],
+  );
+  res.json({
+    ads: rows.map((a) => ({
+      id: a.id, brand: a.brand, title: a.title, body: a.body,
+      imageUrl: a.has_image ? `/api/ads/${a.id}/image` : null,
+      clickUrl: `/api/ads/${a.id}/click`,
+    })),
+  });
+});
+
+customerRouter.get('/ads/:id/image', async (req, res) => {
+  const { rows } = await query('SELECT image, image_mime FROM ad_placements WHERE id = $1 AND image IS NOT NULL', [parse(uuid, req.params.id)]);
+  if (!rows[0]) throw notFound();
+  res.set('Content-Type', rows[0].image_mime);
+  res.set('Cache-Control', 'public, max-age=3600');
+  res.set('Content-Security-Policy', "default-src 'none'");
+  res.send(rows[0].image);
+});
+
+customerRouter.get('/ads/:id/click', async (req, res) => {
+  const { rows } = await query(
+    'UPDATE ad_placements SET clicks = clicks + 1 WHERE id = $1 RETURNING link_url', [parse(uuid, req.params.id)]);
+  if (!rows[0] || !/^https:\/\//.test(rows[0].link_url)) throw notFound();
+  res.redirect(302, rows[0].link_url);
 });
 
 // ------------------------------------------------------ authenticated
@@ -154,6 +206,52 @@ app.post('/me/delete', async (req, res) => {
   res.json({ ok: true });
 });
 
+// ------------------------------------------------------ payments
+// Shared by customers (bookings, plans) and workers (featured listings).
+app.post('/payments/confirm', async (req, res) => {
+  const body = parse(z.object({
+    orderId: z.string().min(5).max(100),
+    paymentId: z.string().min(5).max(100),
+    signature: z.string().min(10).max(200),
+  }).strict(), req.body);
+
+  const { rows } = await query(
+    `SELECT p.*, COALESCE(b.customer_id, s.customer_id, w.user_id) AS owner
+       FROM payments p LEFT JOIN bookings b ON b.id = p.booking_id LEFT JOIN subscriptions s ON s.id = p.subscription_id
+       LEFT JOIN featured_listings fl ON fl.id = p.featured_listing_id LEFT JOIN workers w ON w.id = fl.worker_id
+      WHERE p.gateway_order_id = $1`,
+    [body.orderId],
+  );
+  const pay = rows[0];
+  if (!pay || pay.owner !== req.auth.userId) throw notFound('Order not found');
+  if (!payments.verifyCheckoutSignature(body)) throw badRequest('Payment signature verification failed');
+  // Verify with the gateway itself; the browser's word is not enough.
+  const gw = await payments.fetchAndCapture(body.paymentId, pay.amount);
+  if (gw.orderId !== body.orderId) throw badRequest('Payment does not belong to this order');
+  if (gw.status !== 'captured') throw conflict(`Payment is ${gw.status}`);
+  const out = await tx((db) => markPaymentCaptured(db, { orderId: body.orderId, paymentId: body.paymentId, amount: gw.amount }));
+  if (out.amountMismatch) throw badRequest('Payment amount does not match the order. Support has been notified.');
+  res.json({ ok: true, alreadyCaptured: out.alreadyCaptured });
+});
+
+if (!config.isProduction) {
+  // Development checkout that stands in for the Razorpay widget.
+  app.post('/payments/mock/checkout', async (req, res) => {
+    if (payments.name !== 'mock') throw notFound();
+    const body = parse(z.object({ orderId: z.string() }).strict(), req.body);
+    // Same ownership rule as the real checkout: only the order's payer.
+    const { rows } = await query(
+      `SELECT COALESCE(b.customer_id, s.customer_id, w.user_id) AS owner
+         FROM payments p LEFT JOIN bookings b ON b.id = p.booking_id LEFT JOIN subscriptions s ON s.id = p.subscription_id
+         LEFT JOIN featured_listings fl ON fl.id = p.featured_listing_id LEFT JOIN workers w ON w.id = fl.worker_id
+        WHERE p.gateway_order_id = $1`, [body.orderId]);
+    if (rows[0]?.owner !== req.auth.userId) throw notFound('Order not found');
+    const out = payments.simulateCheckout(body.orderId);
+    if (!out) throw notFound('Order not found');
+    res.json({ orderId: body.orderId, ...out });
+  });
+}
+
 // ------------------------------------------------------ addresses
 const cust = Router();
 app.use(cust);
@@ -201,13 +299,15 @@ cust.delete('/addresses/:id', async (req, res) => {
 
 // ------------------------------------------------------ bookings
 cust.post('/bookings/quote', async (req, res) => {
-  const b = parse(z.object({ serviceId: uuid, scheduledTime: z.iso.datetime({ offset: true }) }).strict(), req.body);
+  const b = parse(z.object({
+    serviceId: uuid, scheduledTime: z.iso.datetime({ offset: true }), withWarranty: z.boolean().default(false),
+  }).strict(), req.body);
   const { rows } = await query('SELECT * FROM services WHERE id = $1 AND active', [b.serviceId]);
   if (!rows[0]) throw notFound('Service not available');
   const when = new Date(b.scheduledTime);
   validateSlot(when);
   res.json({
-    quote: quote(rows[0], when),
+    quote: quote(rows[0], when, { withWarranty: b.withWarranty }),
     cancellationPolicy: {
       freeUntilHoursBefore: config.booking.freeCancelHoursBefore,
       lateFeePercent: config.booking.lateCancelFeeBps / 100,
@@ -222,9 +322,11 @@ cust.post('/bookings', async (req, res) => {
     addressId: uuid,
     scheduledTime: z.iso.datetime({ offset: true }),
     acceptCancellationPolicy: z.literal(true),
+    withWarranty: z.boolean().default(false),
   }).strict(), req.body);
   const out = await tx((db) => createBooking(db, {
     customerId: req.auth.userId, serviceId: b.serviceId, addressId: b.addressId, scheduledTime: new Date(b.scheduledTime),
+    withWarranty: b.withWarranty,
   }));
   res.status(201).json({ booking: customerView(out.booking), quote: out.quote, order: out.order });
 });
@@ -361,15 +463,22 @@ cust.post('/bookings/:id/report-cash', async (req, res) => {
 cust.post('/bookings/:id/dispute', async (req, res) => {
   const id = parse(uuid, req.params.id);
   const body = parse(z.object({
-    reason: z.enum(['not_completed', 'poor_quality', 'damage', 'overcharged', 'asked_for_cash', 'other']),
+    reason: z.enum(['not_completed', 'poor_quality', 'damage', 'overcharged', 'asked_for_cash', 'warranty_claim', 'other']),
     description: z.string().trim().min(10).max(2000),
   }).strict(), req.body);
   const out = await tx(async (db) => {
     const b = await lockBooking(db, id);
     if (b.customer_id !== req.auth.userId) throw notFound();
     if (!['in_progress', 'completed', 'confirmed'].includes(b.status)) throw conflict('Disputes can be raised on started or completed jobs');
-    if (b.status === 'confirmed' && new Date(b.confirmed_at).getTime() < Date.now() - 7 * 86400_000) {
-      throw conflict('Disputes must be raised within 7 days of completion');
+    if (body.reason === 'warranty_claim') {
+      // Plan §2: 30-day service guarantee for bookings that bought it.
+      if (b.status !== 'confirmed' || !b.warranty_until || new Date(b.warranty_until) <= new Date()) {
+        throw conflict('This booking has no active warranty');
+      }
+    } else if (b.status === 'confirmed' && new Date(b.confirmed_at).getTime() < Date.now() - 7 * 86400_000) {
+      throw conflict(b.warranty_until && new Date(b.warranty_until) > new Date()
+        ? 'Past 7 days, issues are handled as warranty claims'
+        : 'Disputes must be raised within 7 days of completion');
     }
     const { rows } = await db.query(
       `INSERT INTO disputes (booking_id, raised_by, reason, description, previous_booking_status)
@@ -386,43 +495,6 @@ cust.post('/bookings/:id/dispute', async (req, res) => {
   });
   res.status(201).json({ disputeId: out });
 });
-
-// ------------------------------------------------------ payments
-cust.post('/payments/confirm', async (req, res) => {
-  const body = parse(z.object({
-    orderId: z.string().min(5).max(100),
-    paymentId: z.string().min(5).max(100),
-    signature: z.string().min(10).max(200),
-  }).strict(), req.body);
-
-  const { rows } = await query(
-    `SELECT p.*, COALESCE(b.customer_id, s.customer_id) AS owner
-       FROM payments p LEFT JOIN bookings b ON b.id = p.booking_id LEFT JOIN subscriptions s ON s.id = p.subscription_id
-      WHERE p.gateway_order_id = $1`,
-    [body.orderId],
-  );
-  const pay = rows[0];
-  if (!pay || pay.owner !== req.auth.userId) throw notFound('Order not found');
-  if (!payments.verifyCheckoutSignature(body)) throw badRequest('Payment signature verification failed');
-  // Verify with the gateway itself; the browser's word is not enough.
-  const gw = await payments.fetchAndCapture(body.paymentId, pay.amount);
-  if (gw.orderId !== body.orderId) throw badRequest('Payment does not belong to this order');
-  if (gw.status !== 'captured') throw conflict(`Payment is ${gw.status}`);
-  const out = await tx((db) => markPaymentCaptured(db, { orderId: body.orderId, paymentId: body.paymentId, amount: gw.amount }));
-  if (out.amountMismatch) throw badRequest('Payment amount does not match the order. Support has been notified.');
-  res.json({ ok: true, alreadyCaptured: out.alreadyCaptured });
-});
-
-if (!config.isProduction) {
-  // Development checkout that stands in for the Razorpay widget.
-  cust.post('/payments/mock/checkout', async (req, res) => {
-    if (payments.name !== 'mock') throw notFound();
-    const body = parse(z.object({ orderId: z.string() }).strict(), req.body);
-    const out = payments.simulateCheckout(body.orderId);
-    if (!out) throw notFound('Order not found');
-    res.json({ orderId: body.orderId, ...out });
-  });
-}
 
 // ------------------------------------------------------ subscriptions
 cust.post('/subscriptions', async (req, res) => {
@@ -443,6 +515,8 @@ cust.post('/subscriptions', async (req, res) => {
     if (!s[0]) throw notFound('Service not available');
     const { rows: a } = await db.query('SELECT id FROM addresses WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL', [b.addressId, req.auth.userId]);
     if (!a[0]) throw notFound('Address not found');
+    const { rows: addrPin } = await db.query('SELECT pincode FROM addresses WHERE id = $1', [b.addressId]);
+    await cityForPincode(db, addrPin[0].pincode);
     const perVisit = s[0].fixed_price_paise;
     const { rows } = await db.query(
       `INSERT INTO subscriptions (customer_id, service_id, address_id, frequency, visits_total, preferred_hour,

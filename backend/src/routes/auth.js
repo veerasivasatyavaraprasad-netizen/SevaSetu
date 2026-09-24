@@ -129,9 +129,13 @@ authRouter.post('/otp/verify', otpIpLimiter, async (req, res) => {
 
   if (result.error) throw result.error;
 
-  setRefreshCookie(res, result.user.role, result.session.refreshToken);
+  // Native apps (X-Client: mobile) keep the refresh token in the OS
+  // keystore instead of a cookie; browsers only ever get the cookie.
+  const mobile = isMobileClient(req);
+  if (!mobile) setRefreshCookie(res, result.user.role, result.session.refreshToken);
   res.json({
     accessToken: result.session.accessToken,
+    ...(mobile ? { refreshToken: result.session.refreshToken } : {}),
     isNewUser: result.isNew,
     user: {
       id: result.user.id, role: result.user.role, name: result.user.name, phoneLast4: result.user.phone_last4,
@@ -145,17 +149,30 @@ authRouter.post('/otp/verify', otpIpLimiter, async (req, res) => {
   });
 });
 
+function isMobileClient(req) {
+  // A browser always sends Origin on cross-origin/POST requests; the native
+  // app never does. Both conditions guard against a page asking for the
+  // token in the body.
+  return req.get('x-client') === 'mobile' && !req.get('origin');
+}
+
 authRouter.post('/refresh', async (req, res) => {
-  const token = req.cookies?.[refreshCookieName('customer')];
+  const mobile = isMobileClient(req);
+  const bodyToken = mobile ? parse(z.object({ refreshToken: z.string().min(20).max(200) }).strict(), req.body).refreshToken : null;
+  const token = bodyToken || req.cookies?.[refreshCookieName('customer')];
   const out = await tx((db) => rotateRefreshToken(db, token, {
     ip: req.ip, userAgent: req.get('user-agent'), expectedRole: 'app',
   })).then((r) => {
     if (r.error) throw r.error;
     return r;
   }).catch((err) => {
-    clearRefreshCookie(res, 'customer');
+    if (!mobile) clearRefreshCookie(res, 'customer');
     throw err;
   });
+  if (mobile) {
+    res.json({ accessToken: out.accessToken, refreshToken: out.refreshToken, role: out.role });
+    return;
+  }
   setRefreshCookie(res, out.role, out.refreshToken);
   res.json({ accessToken: out.accessToken, role: out.role });
 });

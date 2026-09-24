@@ -23,12 +23,14 @@ export async function reconcileBookings() {
   const { rows } = await query(
     `SELECT b.id, b.worker_id, b.customer_id, b.amount, b.otp_verified_at, b.checkout_distance_m,
             EXISTS (SELECT 1 FROM payments p
-                     WHERE (p.booking_id = b.id OR (b.subscription_id IS NOT NULL AND p.subscription_id = b.subscription_id))
+                     WHERE (p.booking_id = b.id OR (b.subscription_id IS NOT NULL AND p.subscription_id = b.subscription_id)
+                            OR (b.warranty_parent_id IS NOT NULL AND p.booking_id = b.warranty_parent_id))
                        AND p.payment_status IN ('captured', 'partially_refunded') AND p.gateway_txn_id IS NOT NULL
                        AND p.paid_at IS NOT NULL) AS payment_captured,
-            COALESCE((SELECT p.amount = b.amount FROM payments p WHERE p.booking_id = b.id LIMIT 1),
-                     (SELECT s.per_visit_paise = b.amount FROM subscriptions s WHERE s.id = b.subscription_id), false)
-              AS payment_amount_ok,
+            CASE WHEN b.warranty_parent_id IS NOT NULL THEN b.amount = 0
+                 ELSE COALESCE((SELECT p.amount = b.amount FROM payments p WHERE p.booking_id = b.id LIMIT 1),
+                               (SELECT s.per_visit_paise = b.amount FROM subscriptions s WHERE s.id = b.subscription_id), false)
+            END AS payment_amount_ok,
             EXISTS (SELECT 1 FROM gps_pings g WHERE g.booking_id = b.id AND g.kind = 'checkin') AS has_checkin,
             EXISTS (SELECT 1 FROM gps_pings g WHERE g.booking_id = b.id AND g.kind = 'checkin'
                        AND g.worker_id = b.worker_id AND g.distance_m <= $1 AND NOT g.is_mock) AS checkin_ok

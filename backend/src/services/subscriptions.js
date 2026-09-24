@@ -36,8 +36,9 @@ export async function generateDueVisits() {
       const scheduled = new Date(`${due}T${hh}:00:00+05:30`);
       const { rows: b } = await db.query(
         `INSERT INTO bookings (customer_id, service_id, subscription_id, address_id, address_enc, pincode, lat, lng,
-                               scheduled_time, amount, completion_otp_enc, status, paid_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'paid', now()) RETURNING *`,
+                               scheduled_time, amount, completion_otp_enc, status, paid_at, city_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'paid', now(),
+                 (SELECT city_id FROM city_pincodes WHERE pincode = $6)) RETURNING *`,
         [s.customer_id, s.service_id, s.id, s.address_id,
           encryptJson({ ...decryptJson(s.details_enc), city: s.city, pincode: s.pincode, label: s.label }),
           s.pincode, s.lat, s.lng, scheduled, s.per_visit_paise, encrypt(randomDigits(4))],

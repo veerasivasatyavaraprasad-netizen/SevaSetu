@@ -17,6 +17,10 @@ export async function resetDb() {
   await migrate({ log: () => {} });
   await query(`INSERT INTO services (name, category, fixed_price_paise, duration_minutes, description)
                VALUES ('AC service', 'ac_service', 59900, 60, 'test'), ('Deep clean', 'cleaning', 349900, 240, 'test')`);
+  const { rows } = await query(`INSERT INTO cities (name, franchise_operator, franchise_revenue_share_bps)
+                                VALUES ('Bengaluru', 'Namma Services LLP', 3000) RETURNING id`);
+  await query(`INSERT INTO city_pincodes (pincode, city_id) VALUES ('560001', $1), ('560002', $1)`, [rows[0].id]);
+  return rows[0].id;
 }
 
 let phoneSeq = 0;
@@ -97,15 +101,18 @@ export async function adminLogin(email, { stepOffset = 0 } = {}) {
   return res.body.accessToken;
 }
 
-export async function paidBooking(c, { daysAhead = 1, hour = 11, serviceName = 'AC service' } = {}) {
+export async function paidBooking(c, { daysAhead = 1, hour = 11, serviceName = 'AC service', withWarranty, openToAll = true } = {}) {
   const { rows } = await query('SELECT id FROM services WHERE name = $1', [serviceName]);
   const res = await api().post('/api/bookings').set(auth(c.token)).send({
     serviceId: rows[0].id, addressId: c.addressId, scheduledTime: istSlot(daysAhead, hour), acceptCancellationPolicy: true,
+    ...(withWarranty ? { withWarranty: true } : {}),
   }).expect(201);
   const pay = await api().post('/api/payments/mock/checkout').set(auth(c.token)).send({ orderId: res.body.order.orderId }).expect(200);
   await api().post('/api/payments/confirm').set(auth(c.token)).send({
     orderId: res.body.order.orderId, paymentId: pay.body.paymentId, signature: pay.body.signature,
   }).expect(200);
+  // Past the featured-professional priority window, so any worker can accept.
+  if (openToAll) await query(`UPDATE bookings SET paid_at = now() - interval '1 hour' WHERE id = $1`, [res.body.booking.id]);
   return res.body.booking.id;
 }
 
