@@ -3,7 +3,7 @@
 
 const PATTERNS = [
   // Phone numbers, including spaced/dotted/dashed forms and +91 prefixes.
-  /(?:\+?\d[\s.\-()]*){10,13}/g,
+  /\+?\d(?:[\s.\-()]*\d){9,12}/g,
   // Email addresses.
   /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi,
   // UPI IDs (name@bank).

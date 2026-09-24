@@ -9,6 +9,7 @@ SevaSetu (*seva*, service + *setu*, bridge) is a working build of the *Hyperloca
 | API | `backend/` | Node.js 22 + Express 5, PostgreSQL 16 |
 | Customer & worker app | `web/` | React 19 + Vite (mobile-first PWA-style web app) |
 | Admin panel | `admin/` | React 19 + Vite, meant for a **separate subdomain** (§10) |
+| Mobile app (Android & iOS) | `mobile/` | Expo SDK 57 + React Native, for customers and workers ([mobile/README.md](mobile/README.md)) |
 
 The stack follows plan §11. Payments use Razorpay (Checkout, Refunds) and RazorpayX (penny-drop fund-account validation and payouts). SMS OTP uses MSG91. Masked calling uses Exotel. Push notifications use Firebase Cloud Messaging.
 
@@ -22,7 +23,16 @@ The stack follows plan §11. Payments use Razorpay (Checkout, Refunds) and Razor
 - **Admin:** dashboard; bookings (filter, detail with GPS, payment and chat evidence, manual reassign, cancel and refund); workers (KYC review with audited document viewing, suspend, payout hold, strikes, commission and reactivation requests); customers (search by exact phone); payouts (weekly batch, approvals, release, CSV export); disputes; refund approvals; fraud and anomaly queue; change approvals; services and pricing; reports (revenue, commission, cash-complaint rate, top and bottom workers); audit log with chain verification and admin sign-in log; admin accounts and quarterly access review; background jobs.
 
 ### §4 Roles & permissions
-The customer, worker and admin roles are enforced server-side. Each admin gets an explicit permission set from 15 permissions (`backend/src/lib/permissions.js`) instead of a single all-powerful role. Conflicting duties can't be held together; for example, `payouts.approve` excludes `commission.request`, `changes.approve` and `payouts.prepare`. No admin can edit worker bank details at all: only the worker can, through penny-drop re-verification. The later-phase city-manager role is not built (see *Not built*).
+The customer, worker and admin roles are enforced server-side. Each admin gets an explicit permission set from 15 permissions (`backend/src/lib/permissions.js`) instead of a single all-powerful role. Conflicting duties can't be held together; for example, `payouts.approve` excludes `commission.request` and `payouts.prepare`. No admin can edit worker bank details at all: only the worker can, through penny-drop re-verification.
+
+**City managers (§4, Phase 3)** are admins limited to one or more cities. They see only their cities' bookings, workers, disputes, fraud flags, customers, dashboard and reports; anything else returns "not found". They can only hold local-operations permissions (reports, KYC approval, bookings, fraud review, enforcement, disputes), never commission, payouts, refunds, pricing, admin access or gateway settings.
+
+### §2 / §12 Phase 3 revenue features
+- **Cities and franchises:** each city has serviceable PIN codes (bookings and worker areas elsewhere are refused), an optional franchise operator, and their share of commission. Reports include a per-city **franchise settlement**.
+- **Featured listings:** workers buy a plan in-app (Razorpay). Featured professionals get the first notification and a priority window (10 minutes, 2 for urgent jobs) during which only they can see and accept new jobs. This is enforced on both the job list and acceptance.
+- **30-day warranty add-on:** a per-service fee. The fee is platform revenue, so the worker's share is computed on the service price. Warranty claims are accepted after the normal 7-day dispute window. An admin can resolve a claim with a **free revisit** by the original worker, which still needs a GPS check-in and a new customer code, and whose zero price is covered by the original payment (database-guarded).
+- **Surge pricing:** same-day urgent premium.
+- **Advertising:** sponsored placements (home banner, after payment) that can target a category or city, with https-only admin-entered links and impression and click counting. They're always labelled "Sponsored".
 
 ### §5 Authentication
 - Customers and workers log in with phone + OTP: a 6-digit code with a 5-minute TTL, at most 3 requests per number per 10 minutes, and 5 wrong attempts before it locks. Explicit privacy consent is recorded on signup.
@@ -84,10 +94,10 @@ createdb -O sevasetu sevasetu_test
 # 2. API (development providers: mock gateway, OTPs printed to the console)
 cd backend
 npm install
-npm run seed                                    # service catalogue
+npm run seed -- --city Bengaluru --pincodes 560001,560002   # services + a first serviceable city
 ADMIN_PASSWORD='Choose-A-Str0ng!Pass' npm run create-admin -- \
   --email ops@example.com --name "Ops" \
-  --permissions reports.view,bookings.manage,workers.kyc,workers.enforce,commission.request,customers.view,disputes.manage,fraud.review,catalog.manage,audit.view,payouts.prepare,admins.manage
+  --permissions reports.view,bookings.manage,workers.kyc,workers.enforce,commission.request,customers.view,disputes.manage,fraud.review,catalog.manage,audit.view,payouts.prepare,admins.manage,cities.manage,ads.manage
 ADMIN_PASSWORD='An0ther-Str0ng!Pass' npm run create-admin -- \
   --email finance@example.com --name "Finance" \
   --permissions payouts.approve,refunds.approve,changes.approve,reports.view
@@ -106,7 +116,7 @@ With Docker: `docker compose up --build` gives you the web app on :8080 and admi
 ```bash
 cd backend && npm test
 ```
-45 integration tests run against a real PostgreSQL database (`TEST_DATABASE_URL`, default `sevasetu_test`, **which is wiped**). They cover:
+56 integration tests run against a real PostgreSQL database (`TEST_DATABASE_URL`, default `sevasetu_test`, **which is wiped**). They cover:
 - the full booking → payment → GPS → OTP → reconciliation → payout path;
 - forged payment signatures and the database-level payment, price and state guards;
 - OTP limits, refresh-token reuse, admin 2FA, lockout and idle expiry;
@@ -143,7 +153,7 @@ Steps:
    `JWT_SECRET`, `PII_ENCRYPTION_KEY` and `LOOKUP_HMAC_KEY` are generated for you. Copy `PII_ENCRYPTION_KEY` somewhere safe.
 4. Click **Apply**. When the deploy finishes:
    - The app is live at `https://sevasetu-app.onrender.com` and the admin panel at `https://sevasetu-admin.onrender.com`. Render appends a suffix if a name is taken; the dashboard shows the real URLs.
-   - Both admins sign in and enrol 2FA. Ops seeds the catalogue under **Services & pricing**.
+   - Both admins sign in and enrol 2FA. Ops launches the first city with its PIN codes under **Cities & franchises**, and adds services and prices under **Services & pricing**.
 5. Razorpay dashboard → Webhooks: add `https://<app URL>/api/webhooks/razorpay` for `payment.captured`, `order.paid` and `payout.*` events, using the same `RAZORPAY_WEBHOOK_SECRET`.
 6. Optional: attach your own domains, e.g. `app.example.com` and an unlinked `ops.example.com`, in each service's settings.
 
@@ -162,8 +172,7 @@ The API refuses to start if any production credential is missing or still set to
 ## Not built
 
 These need things a codebase can't supply, or they are later-phase plan items:
-- **Native mobile apps.** The web app is mobile-first and works in a phone browser. Browsers can't detect mock-location apps, so the API accepts an `isMock` flag the native app should fill from Android's `Location.isMock()`. Native React Native apps are the plan's recommended next step.
-- **Phase 3 items (§12):** worker featured listings, advertising, warranty add-ons, franchise tooling and the city-manager role. Surge (same-day urgent) pricing *is* implemented.
+- **App-store publishing.** The mobile app is built and bundles for both platforms. Publishing needs your Google Play and Apple developer accounts, Firebase config files for push notifications, and real icons (see `mobile/README.md`).
 - **Plan §9.5 rule "last to accept but unexplained high income":** off-app income isn't observable in platform data, so there is no honest way to automate this rule. Use the value-drop and cancel-without-rebook rules, plus manual review.
 - **Automatic commission recovery** from pending payouts for confirmed off-app jobs. The plan says "where legally applicable", so this needs a lawyer's clause first. Today such a worker's payouts are held and an admin decides.
 - **Aadhaar storage:** UIDAI rules require an Aadhaar Data Vault (or offline e-KYC/masked Aadhaar) for storing Aadhaar numbers. The number is encrypted here, but before launch consider collecting only masked Aadhaar or using DigiLocker/offline e-KYC.

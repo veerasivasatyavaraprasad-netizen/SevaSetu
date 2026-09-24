@@ -56,3 +56,22 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm audit --omit=dev --audit-level=high
+
+  mobile:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - run: npm ci
+      # Bundles the app for both platforms: catches broken imports and syntax.
+      - run: npm run export:check
+        env:
+          EXPO_OFFLINE: "1"
+          CI: "1"

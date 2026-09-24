@@ -1,0 +1,62 @@
+{
+  "expo": {
+    "name": "SevaSetu",
+    "slug": "sevasetu",
+    "scheme": "sevasetu",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "bundleIdentifier": "in.sevasetu.app",
+      "supportsTablet": false,
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "SevaSetu uses your location to pin your address and to check in at the customer’s address when you arrive for a job.",
+        "NSCameraUsageDescription": "SevaSetu uses the camera to take your selfie and ID photos for verification.",
+        "NSPhotoLibraryUsageDescription": "SevaSetu lets you choose ID document photos from your library."
+      }
+    },
+    "android": {
+      "package": "in.sevasetu.app",
+      "adaptiveIcon": {
+        "backgroundColor": "#E6F4F2",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "CAMERA",
+        "POST_NOTIFICATIONS"
+      ],
+      "blockedPermissions": [
+        "ACCESS_BACKGROUND_LOCATION",
+        "READ_CONTACTS",
+        "READ_SMS"
+      ]
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "SevaSetu uses your location to pin your address and to check in at the customer’s address when you arrive for a job."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "cameraPermission": "SevaSetu uses the camera to take your selfie and ID photos for verification.",
+          "photosPermission": "SevaSetu lets you choose ID document photos from your library."
+        }
+      ],
+      "expo-notifications",
+      "expo-sharing"
+    ],
+    "experiments": {
+      "typedRoutes": false
+    }
+  }
+}

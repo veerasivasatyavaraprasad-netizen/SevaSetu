@@ -1,5 +1,7 @@
 // Seeds the service catalogue (idempotent). Prices are placeholders —
-// set real prices from the admin panel.
+// set real prices from the admin panel. Optionally launches a first city:
+//   npm run seed -- --city Bengaluru --pincodes 560001,560002
+import { parseArgs } from 'node:util';
 import { pool, tx } from '../db.js';
 import { migrate } from '../lib/migrate.js';
 
@@ -16,9 +18,21 @@ const SERVICES = [
   ['Home tutoring (1 hour)', 'tutoring', 49900, 60, 'Verified tutor, school curriculum.'],
 ];
 
+const { values } = parseArgs({ options: { city: { type: 'string' }, pincodes: { type: 'string' } } });
+
 try {
   await migrate({ log: () => {} });
   await tx(async (db) => {
+    if (values.city) {
+      const pins = (values.pincodes || '').split(',').map((p) => p.trim()).filter(Boolean);
+      if (!pins.length || pins.some((p) => !/^[1-9]\d{5}$/.test(p))) throw new Error('--pincodes must be a comma-separated list of 6-digit PIN codes');
+      const { rows } = await db.query(
+        `INSERT INTO cities (name) VALUES ($1) ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name RETURNING id`, [values.city]);
+      for (const p of pins) {
+        await db.query('INSERT INTO city_pincodes (pincode, city_id) VALUES ($1, $2) ON CONFLICT DO NOTHING', [p, rows[0].id]);
+      }
+      console.log(`city ${values.city}: ${pins.length} PIN codes`);
+    }
     for (const [name, category, price, mins, desc] of SERVICES) {
       await db.query(
         `INSERT INTO services (name, category, fixed_price_paise, duration_minutes, description)
