@@ -134,6 +134,16 @@ To use an external scheduler instead, set `RUN_SCHEDULER=false` and run `npm run
 
 ---
 
+## Deploying for free on Oracle Cloud (India) — recommended
+
+One server in Mumbai or Hyderabad on Oracle's Always Free tier runs everything:
+- the app, and the admin panel on its own address;
+- PostgreSQL;
+- automatic HTTPS;
+- daily backups.
+
+It's installed with one command (`deploy/oracle/setup.sh`). Step-by-step guide: **[deploy/oracle/README.md](deploy/oracle/README.md)**.
+
 ## Deploying live for free (Render + Neon, Singapore)
 
 Hosting and database cost nothing. Pay-as-you-go costs remain for real usage:

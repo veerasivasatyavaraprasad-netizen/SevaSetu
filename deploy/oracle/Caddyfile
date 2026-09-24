@@ -1,0 +1,13 @@
+# Automatic HTTPS (Let's Encrypt) for both sites.
+{$APP_DOMAIN} {
+	encode zstd gzip
+	header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+	reverse_proxy app:4000
+}
+
+# Admin panel on its own host (plan §10).
+{$ADMIN_DOMAIN} {
+	encode zstd gzip
+	header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+	reverse_proxy admin:4000
+}
